@@ -238,6 +238,7 @@ struct CaptureScreen: View {
                                        frontNeedsMirror: camera.frontPreviewNeedsMirror,
                                        aperture: chrome.preview, layout: layout, showsGrid: showsGrid,
                                        modeRevision: modeRevision, transitioning: changingSource, reduceMotion: reduceMotion)
+                        .equatable()
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .allowsHitTesting(false)
                     OutsideCameraAperture(aperture: chrome.preview)
@@ -1656,7 +1657,7 @@ enum ShutterGesturePolicy {
     }
 }
 
-struct CameraVideoSurface: UIViewRepresentable {
+struct CameraVideoSurface: UIViewRepresentable, Equatable {
     let rear: AVSampleBufferDisplayLayer
     let front: AVSampleBufferDisplayLayer
     let rearSize: CGSize
@@ -1668,6 +1669,15 @@ struct CameraVideoSurface: UIViewRepresentable {
     var modeRevision = 0
     var transitioning = false
     var reduceMotion = false
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rear === rhs.rear && lhs.front === rhs.front &&
+            lhs.rearSize == rhs.rearSize && lhs.frontSize == rhs.frontSize &&
+            lhs.frontNeedsMirror == rhs.frontNeedsMirror && lhs.aperture == rhs.aperture &&
+            lhs.layout == rhs.layout && lhs.showsGrid == rhs.showsGrid &&
+            lhs.modeRevision == rhs.modeRevision && lhs.transitioning == rhs.transitioning &&
+            lhs.reduceMotion == rhs.reduceMotion
+    }
 
     func makeUIView(context: Context) -> Host { Host() }
     func updateUIView(_ view: Host, context: Context) {

@@ -37,8 +37,10 @@ struct VideoFrameRateMeter {
 
 enum VideoFrameRateReadout {
     static func fps(requested: Int, device: Int?, measured: Int?, recording: Bool, constrained: Bool) -> Int {
-        // The idle preview is intentionally capped at 30 to save power. It must
-        // not replace a selected 60 fps recording format with a false 30 fps.
+        // The actual idle preview cadence is thermally capped by
+        // CaptureWorkPolicy. Keep the selected recording rate in the readout
+        // until recording starts so the selected 60 fps profile is not shown as
+        // a misleading 30 fps value.
         guard recording || constrained else { return requested }
         let applied = max(1, min(requested, device ?? requested))
         return recording ? max(1, min(applied, measured ?? applied)) : applied

@@ -41,10 +41,51 @@ final class ThermalOptimizationTests: XCTestCase {
     }
 
     func testWarmIdleCadenceRestoresSelectedVideoRateAtStart() {
-        XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 60, pressure: .normal, videoMode: true, recording: false), 30)
+        XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 60, pressure: .normal, videoMode: true, recording: false), 24)
+        XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 30, pressure: .normal, videoMode: false, recording: false), 24)
+        XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 30, pressure: .fair, videoMode: false, recording: false), 22)
+        XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 30, pressure: .serious, videoMode: false, recording: false), 20)
         XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 60, pressure: .fair, videoMode: true, recording: true), 60)
         XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 24, pressure: .normal, videoMode: true, recording: false), 24)
         XCTAssertEqual(CaptureWorkPolicy.frameRate(requested: 60, pressure: .critical, videoMode: true, recording: true), 15)
+    }
+
+    func testPreviewDisplayCadenceUsesAnAccumulatedDeadline() {
+        func count(source: Int, target: Double) -> Int {
+            var cadence = PreviewDisplayCadence()
+            var result = 0
+            for index in 0..<(source * 1) {
+                let time = CMTime(value: CMTimeValue(index), timescale: CMTimeScale(source))
+                if cadence.shouldAttempt(at: time, targetFrameRate: target) {
+                    cadence.didEnqueue(at: time)
+                    result += 1
+                }
+            }
+            return result
+        }
+
+        XCTAssertEqual(count(source: 30, target: 24), 24)
+        XCTAssertEqual(count(source: 60, target: 24), 24)
+        XCTAssertEqual(count(source: 24, target: 24), 24)
+    }
+
+    func testPreviewDisplayCadenceHandlesBackpressureRewindsAndRateChanges() {
+        var cadence = PreviewDisplayCadence()
+        let first = CMTime(value: 0, timescale: 600)
+        let next = CMTime(value: 30, timescale: 600)
+        XCTAssertTrue(cadence.shouldAttempt(at: first, targetFrameRate: 24))
+        // A rejected enqueue must not consume the first display deadline.
+        XCTAssertTrue(cadence.shouldAttempt(at: next, targetFrameRate: 24))
+        cadence.didEnqueue(at: next)
+        XCTAssertFalse(cadence.shouldAttempt(at: next, targetFrameRate: 24))
+
+        let rewound = CMTime(value: 10, timescale: 600)
+        XCTAssertTrue(cadence.shouldAttempt(at: rewound, targetFrameRate: 24))
+        cadence.didEnqueue(at: rewound)
+        let changedRate = CMTime(value: 20, timescale: 600)
+        XCTAssertTrue(cadence.shouldAttempt(at: changedRate, targetFrameRate: 20))
+        cadence.didEnqueue(at: changedRate)
+        XCTAssertFalse(cadence.shouldAttempt(at: changedRate, targetFrameRate: 20))
     }
 
     func testExportSchedulingProtectsCaptureAndResumesOutsideCamera() {

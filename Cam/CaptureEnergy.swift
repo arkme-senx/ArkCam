@@ -21,9 +21,12 @@ struct CaptureEnergyState: Equatable {
 enum CaptureWorkPolicy {
     static func frameRate(requested: Int32, pressure: CameraPressureLevel,
                           videoMode: Bool, recording: Bool) -> Int32 {
-        let rate = videoMode && !recording ? min(30, requested) : requested
-        guard pressure >= .serious else { return rate }
-        return min(rate, CameraLoadPolicy.plan(level: pressure, causes: []).frameRate)
+        // Keep the always-on preview below the recording cadence in both photo
+        // and video modes. Recording still uses its requested rate until the
+        // device reports serious pressure, where the thermal plan takes over.
+        let plan = CameraLoadPolicy.plan(level: pressure, causes: [])
+        let rate = recording ? requested : min(plan.frameRate, requested)
+        return pressure >= .serious ? min(rate, plan.frameRate) : rate
     }
 
     static func liveBuffer(requested: Bool, running: Bool, videoMode: Bool,

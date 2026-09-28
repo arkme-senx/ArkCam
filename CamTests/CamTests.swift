@@ -773,15 +773,15 @@ final class CamTests: XCTestCase {
 
     func testCameraPressurePolicyReducesWorkAndExplainsTheRealCause() {
         XCTAssertEqual(CameraLoadPolicy.plan(level: .normal, causes: []),
-                       CameraLoadPlan(frameRate: 30, liveFrameRate: 12,
-                                      liveLongEdge: 720, notice: nil))
+                       CameraLoadPlan(frameRate: 24, liveFrameRate: 10,
+                                      liveLongEdge: 640, notice: nil))
         XCTAssertEqual(CameraLoadPolicy.plan(level: .serious, causes: .peakPower),
-                       CameraLoadPlan(frameRate: 24, liveFrameRate: 8,
-                                      liveLongEdge: 640,
+                       CameraLoadPlan(frameRate: 20, liveFrameRate: 6,
+                                      liveLongEdge: 480,
                                       notice: "相机功耗较高，已自动降低拍摄负载"))
         XCTAssertEqual(CameraLoadPolicy.plan(level: .critical, causes: .thermal),
-                       CameraLoadPlan(frameRate: 15, liveFrameRate: 5,
-                                      liveLongEdge: 540,
+                       CameraLoadPlan(frameRate: 15, liveFrameRate: 4,
+                                      liveLongEdge: 400,
                                       notice: "相机温度较高，已自动降低拍摄负载"))
     }
 

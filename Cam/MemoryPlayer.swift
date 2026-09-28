@@ -125,7 +125,10 @@ final class MemoryPlayer: ObservableObject {
             self.fail("视频准备时间过长，请返回后重新打开。原片仍保留在 App 中。")
         }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            // setCategory can synchronously wait on the audio daemon. Keep
+            // that IPC off the main actor so opening a memory cannot freeze
+            // the SwiftUI run loop while the player is being prepared.
+            try await Self.preparePlaybackAudioSession()
             var original = item
             original.layoutOverride = nil
             let recipe = try await MediaExporter.videoRecipe(item: original, rearURL: rear, frontURL: front)
@@ -264,27 +267,44 @@ final class MemoryPlayer: ObservableObject {
 
     func resume() {
         guard isReady else { return }
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-            playRequested = true
-            player.play()
-        } catch { fail("无法播放声音：\(error.localizedDescription)") }
+        playRequested = true
+        let currentGeneration = generation
+        Task { @MainActor [weak self] in
+            do {
+                try await Self.activatePlaybackAudioSession()
+                guard let self, self.generation == currentGeneration,
+                      self.playRequested, self.isReady else { return }
+                self.player.play()
+            } catch {
+                guard let self, self.generation == currentGeneration else { return }
+                self.playRequested = false
+                self.fail("无法播放声音：\(error.localizedDescription)")
+            }
+        }
     }
 
     func playFromBeginning() {
         guard isReady else { return }
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-            playRequested = true
-            let currentGeneration = generation
-            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-                guard finished else { return }
-                Task { @MainActor in
-                    guard let self, self.generation == currentGeneration, self.playRequested else { return }
-                    self.player.play()
+        playRequested = true
+        let currentGeneration = generation
+        Task { @MainActor [weak self] in
+            do {
+                try await Self.activatePlaybackAudioSession()
+                guard let self, self.generation == currentGeneration,
+                      self.playRequested, self.isReady else { return }
+                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                    guard finished else { return }
+                    Task { @MainActor in
+                        guard let self, self.generation == currentGeneration, self.playRequested else { return }
+                        self.player.play()
+                    }
                 }
+            } catch {
+                guard let self, self.generation == currentGeneration else { return }
+                self.playRequested = false
+                self.fail("无法播放声音：\(error.localizedDescription)")
             }
-        } catch { fail("无法播放声音：\(error.localizedDescription)") }
+        }
     }
 
     func seek(_ seconds: Double) {
@@ -303,6 +323,40 @@ final class MemoryPlayer: ObservableObject {
         generator.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
         let result = try await generator.image(at: time)
         return UIImage(cgImage: result.image)
+    }
+
+    private nonisolated static let playbackAudioQueue = DispatchQueue(
+        label: "cam.playback-audio", qos: .userInitiated)
+
+    private nonisolated static func preparePlaybackAudioSession() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            playbackAudioQueue.async {
+                do {
+                    let session = AVAudioSession.sharedInstance()
+                    // Avoid repeating the synchronous daemon round-trip when
+                    // another memory already configured the same route.
+                    if session.category != .playback || session.mode != .moviePlayback {
+                        try session.setCategory(.playback, mode: .moviePlayback)
+                    }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private nonisolated static func activatePlaybackAudioSession() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            playbackAudioQueue.async {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }
 

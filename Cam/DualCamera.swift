@@ -40,14 +40,67 @@ enum CameraLoadPolicy {
         }
         switch level {
         case .normal:
-            return CameraLoadPlan(frameRate: 30, liveFrameRate: 12, liveLongEdge: 720, notice: notice)
+            // Dual-camera photo preview is already a continuous video workload.
+            // Keep the idle cadence below the 30 fps recording path and reduce
+            // the optional rolling Live buffer so the phone has thermal headroom.
+            return CameraLoadPlan(frameRate: 24, liveFrameRate: 10, liveLongEdge: 640, notice: notice)
         case .fair:
-            return CameraLoadPlan(frameRate: 30, liveFrameRate: 10, liveLongEdge: 720, notice: nil)
+            return CameraLoadPlan(frameRate: 22, liveFrameRate: 8, liveLongEdge: 560, notice: nil)
         case .serious:
-            return CameraLoadPlan(frameRate: 24, liveFrameRate: 8, liveLongEdge: 640, notice: notice)
+            return CameraLoadPlan(frameRate: 20, liveFrameRate: 6, liveLongEdge: 480, notice: notice)
         case .critical, .shutdown:
-            return CameraLoadPlan(frameRate: 15, liveFrameRate: 5, liveLongEdge: 540, notice: notice)
+            return CameraLoadPlan(frameRate: 15, liveFrameRate: 4, liveLongEdge: 400, notice: notice)
         }
+    }
+}
+
+/// Decides which capture timestamps should be sent to the on-screen renderer.
+/// The deadline is advanced only after a frame was actually enqueued, so
+/// renderer backpressure never consumes a future display slot.
+struct PreviewDisplayCadence: Equatable {
+    private(set) var targetFrameRate: Double = 0
+    private(set) var nextDeadline = CMTime.invalid
+    private(set) var lastDisplayed = CMTime.invalid
+
+    mutating func reset() {
+        targetFrameRate = 0
+        nextDeadline = .invalid
+        lastDisplayed = .invalid
+    }
+
+    mutating func shouldAttempt(at time: CMTime, targetFrameRate requested: Double) -> Bool {
+        let rate = requested.isFinite && requested > 0 ? requested : 0
+        if targetFrameRate != rate {
+            targetFrameRate = rate
+            nextDeadline = .invalid
+        }
+        guard time.isValid, time.seconds.isFinite, rate > 0 else { return true }
+        if lastDisplayed.isValid {
+            let order = CMTimeCompare(time, lastDisplayed)
+            if order < 0 {
+                nextDeadline = .invalid
+                lastDisplayed = .invalid
+            } else if order == 0 {
+                return false
+            }
+        }
+        guard nextDeadline.isValid else { return true }
+        return CMTimeCompare(time, nextDeadline) >= 0
+    }
+
+    mutating func didEnqueue(at time: CMTime) {
+        guard targetFrameRate > 0, time.isValid, time.seconds.isFinite else { return }
+        let interval = 1.0 / targetFrameRate
+        if !lastDisplayed.isValid || CMTimeCompare(time, lastDisplayed) < 0 || !nextDeadline.isValid {
+            lastDisplayed = time
+            nextDeadline = time + CMTime(seconds: interval, preferredTimescale: 600)
+            return
+        }
+        lastDisplayed = time
+        let overdue = time.seconds - nextDeadline.seconds
+        guard overdue >= 0 else { return }
+        let steps = max(1, Int(floor(overdue * targetFrameRate)) + 1)
+        nextDeadline = nextDeadline + CMTime(seconds: Double(steps) * interval, preferredTimescale: 600)
     }
 }
 
@@ -294,12 +347,17 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
             let size = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
             return size.width >= requested.resolution.longEdge && size.height >= requested.resolution.shortEdge &&
                 size.width <= requested.resolution.longEdge * 2 &&
-                abs(device.activeVideoMinFrameDuration.seconds - 1 / Double(requested.fps)) < 0.001 &&
-                abs(device.activeVideoMaxFrameDuration.seconds - 1 / Double(requested.fps)) < 0.001
+                device.activeFormat.videoSupportedFrameRateRanges.contains {
+                    $0.minFrameRate <= Double(requested.fps) && $0.maxFrameRate >= Double(requested.fps)
+                }
         }) {
+            // Idle preview is intentionally capped below the selected recording
+            // cadence. Raising the cadence at recordingStartID time does not
+            // require replacing the photo format when that format supports it.
             recordingReusesPhotoFormat = true
             activeVideoProfile = requested
             liveBuffer.setEnabled(false)
+            applyLoadPlan(CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []), level: appliedPressureLevel, force: true)
             refreshVideoReadout()
             return
         }
@@ -356,6 +414,7 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         guard activeVideoProfile != nil, recording == nil, photoCapture == nil else { return }
         if recordingReusesPhotoFormat {
             recordingReusesPhotoFormat = false; activeVideoProfile = nil
+            applyLoadPlan(CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []), level: appliedPressureLevel, force: true)
             refreshLiveBuffer()
             return
         }
@@ -448,6 +507,8 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private var frontVideoSize = CGSize(width: 1080, height: 1920)
     private var rearUsesVideoDisplay = true
     private var frontUsesVideoDisplay = true
+    private var rearDisplayCadence = PreviewDisplayCadence()
+    private var frontDisplayCadence = PreviewDisplayCadence()
     private var rearDisplayedFrames = 0
     private var frontDisplayedFrames = 0
     private let queue = DispatchQueue(label: "cam.capture", qos: .userInitiated)
@@ -513,6 +574,8 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
                 }
                 rearStabilizedPreview.sampleBufferRenderer.flush()
                 frontStabilizedPreview.sampleBufferRenderer.flush()
+                rearDisplayCadence.reset()
+                frontDisplayCadence.reset()
                 refreshLiveBuffer()
                 continuation.resume(returning: true)
             }
@@ -576,7 +639,8 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
                     try configure()
                     if captureVideoMode { try prepareVideoFormat() }
                     applyLoadPlan(CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []), level: appliedPressureLevel, force: true)
-                    if wantsRunning, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
+                    if wantsRunning, liveBufferingEnabled,
+                       AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
                         try addMicrophone()
                     }
                 }
@@ -2662,11 +2726,13 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         let requested = Int32(activeVideoProfile?.fps ?? 30)
         let actualTarget = CaptureWorkPolicy.frameRate(requested: requested, pressure: level,
             videoMode: captureVideoMode, recording: recording != nil || recordingStartID != nil)
-        // Keep the input allocation warm across idle/recording. Changing that
-        // allocation restarts the graph and costs ~0.6 s on the device, whereas
-        // changing the device cadence can take effect without restarting preview.
-        let reservedTarget = CaptureWorkPolicy.frameRate(requested: requested, pressure: level,
-            videoMode: captureVideoMode, recording: true)
+        // Keep the selected cadence reserved while recording starts, but let an
+        // idle preview reserve its lower cadence. The start path raises this
+        // ceiling after recordingStartID is set, before the first frame is used.
+        let reservedTarget = (recording != nil || recordingStartID != nil)
+            ? CaptureWorkPolicy.frameRate(requested: requested, pressure: level,
+                videoMode: captureVideoMode, recording: true)
+            : actualTarget
         let rates = devices.compactMap { device -> (AVCaptureDevice, AVCaptureDeviceInput?, CMTime, CMTime)? in
             guard let actual = supportedFrameRate(near: actualTarget, device: device),
                   let reserved = supportedFrameRate(near: reservedTarget, device: device) else { return nil }
@@ -2755,7 +2821,9 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         // Limit resource reservation as well as delivered fps. Otherwise a
         // 60 fps-capable 4:3 format reserves 60 fps of MultiCam processing even
         // though this app only captures 30 fps (or less under pressure).
-        input.videoMinFrameDurationOverride = CMTime(value: 1, timescale: Int32(activeVideoProfile?.fps ?? 30))
+        let inputRate: Int32 = activeVideoProfile.map { Int32($0.fps) }
+            ?? CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []).frameRate
+        input.videoMinFrameDurationOverride = CMTime(value: 1, timescale: inputRate)
         guard let port = input.ports(for: .video, sourceDeviceType: device.deviceType,
                                      sourceDevicePosition: device.position).first else {
             throw CamError.message("摄像头画面连接失败。")
@@ -3000,6 +3068,7 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
                     catch { publish { $0.message = "Live Photo 可以拍摄，但暂时没有声音：\(error.localizedDescription)" } }
                 } else if !enabled, recording == nil {
                     warmRecordingResources()
+                    removeMicrophone()
                 }
                 #if DEBUG
                 print("Cam custom Live buffering: enabled=\(enabled) audio=\(audioInput != nil)")
@@ -3411,16 +3480,16 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         guard configured, wantsRunning, recording == nil else { return }
         let profile = captureIsDual ? dualVideoProfile : singleVideoProfile
         for device in devices { _ = videoFormat(for: device, profile: profile) }
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
-        // Keep one audio input ready for QuickTake. No rolling video encoder and
-        // no audio is stored unless a capture/Live request consumes it.
-        try? addMicrophone()
+        // Keep the video format lookup warm, but attach audio only when a video
+        // or Live capture actually needs it. An idle photo preview otherwise
+        // keeps AVAudioSession active for no user-visible benefit.
     }
 
     private func removeMicrophone(force: Bool = false) {
-        // Keep authorized audio warm while the capture screen is visible,
-        // including photo mode's QuickTake. Pause/background always releases it.
-        if !force && (recording != nil || liveBufferingEnabled || wantsRunning) { return }
+        // A preview in either photo or video mode does not need an audio graph.
+        // Keep it attached only while a recorder/Live buffer is consuming it;
+        // pause/background always releases it as well.
+        if !force && (recording != nil || recordingStartID != nil || liveBufferingEnabled) { return }
         if let audioInput {
             session.beginConfiguration()
             session.removeOutput(audioOutput)
@@ -3454,7 +3523,8 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
                 }
             }
             if isFront ? frontUsesVideoDisplay : rearUsesVideoDisplay {
-                if display(sampleBuffer, on: isFront ? frontStabilizedPreview : rearStabilizedPreview) {
+                if displayIfDue(sampleBuffer, front: isFront,
+                               on: isFront ? frontStabilizedPreview : rearStabilizedPreview) {
                     if isFront { frontDisplayedFrames += 1 } else { rearDisplayedFrames += 1 }
                     acceptModePreview(sampleBuffer, front: isFront)
                 }
@@ -3465,10 +3535,31 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         recording.consume(sampleBuffer, front: output === audioOutput ? nil : output === frontVideo,
                           notBefore: recordingNotBefore)
         let elapsed = recording.elapsed
-        if recording.hasStarted, elapsed - lastElapsedUpdate >= 0.2 {
+        // The UI renders elapsed time as whole seconds, so publishing five
+        // updates per second only invalidates the SwiftUI camera screen.
+        if recording.hasStarted, elapsed - lastElapsedUpdate >= 1.0 {
             lastElapsedUpdate = elapsed
             publish { $0.elapsed = elapsed }
         }
+    }
+
+    @discardableResult
+    private func displayIfDue(_ sample: CMSampleBuffer, front: Bool,
+                              on layer: AVSampleBufferDisplayLayer) -> Bool {
+        // This throttles only the on-screen renderer. The recorder and Live
+        // buffer still receive every capture sample below this branch.
+        let time = CMSampleBufferGetPresentationTimeStamp(sample)
+        let interval = 1.0 / Double(CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []).frameRate)
+        let allowed: Bool
+        if front {
+            allowed = frontDisplayCadence.shouldAttempt(at: time, targetFrameRate: 1 / interval)
+        } else {
+            allowed = rearDisplayCadence.shouldAttempt(at: time, targetFrameRate: 1 / interval)
+        }
+        guard allowed, display(sample, on: layer) else { return false }
+        if front { frontDisplayCadence.didEnqueue(at: time) }
+        else { rearDisplayCadence.didEnqueue(at: time) }
+        return true
     }
 
     @discardableResult
@@ -3476,6 +3567,9 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         let renderer = layer.sampleBufferRenderer
         if renderer.requiresFlushToResumeDecoding { renderer.flush() }
         guard renderer.isReadyForMoreMediaData else { return false }
+        // Keep display-only attachments isolated from the recorder's sample.
+        // CMSampleBufferCreateCopy is shallow: the pixel buffer and format
+        // description are retained rather than copied.
         var copy: CMSampleBuffer?
         guard CMSampleBufferCreateCopy(allocator: kCFAllocatorDefault, sampleBuffer: sample,
                                        sampleBufferOut: &copy) == noErr, let copy else { return false }
