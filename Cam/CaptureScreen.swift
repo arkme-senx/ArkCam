@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import AVKit
+import os
 
 struct CameraFocusRequest {
     let displayPoint: CGPoint
@@ -140,6 +141,7 @@ private struct OutsideCameraAperture: Shape {
 }
 
 struct CaptureScreen: View {
+    private let lifecycleLog = Logger(subsystem: "com.tison.dualcam", category: "CaptureLifecycle")
     @AppStorage("cameraLanguage") private var interfaceLanguage = CameraDefaults.string("cameraLanguage")
     @ObservedObject var camera: DualCamera
     @ObservedObject var library: MediaLibrary
@@ -154,6 +156,7 @@ struct CaptureScreen: View {
     @State private var initializedMode = false
     @State private var resumeTask: Task<Void, Never>?
     @State private var resumePermitted = true
+    @State private var lockedViewVisible = false
     @State private var preferenceTask: Task<Void, Never>?
     @State private var modeTask: Task<Void, Never>?
     @State private var modeRevision = 0
@@ -626,9 +629,29 @@ struct CaptureScreen: View {
                 }
             }
         }
-        .onDisappear { locationService.stop(); cancelShutterPress(); modeTask?.cancel(); camera.cancelModePreviewWait() }
+        .onAppear {
+            guard captureAccess.isLocked else { return }
+            lockedViewVisible = true
+            resumePermitted = true
+            lifecycleLog.notice("locked capture view appeared")
+            updateLocationCollection()
+            updateAlbumSaving()
+            albumSaver.retry()
+            Task { await resumeCamera() }
+        }
+        .onDisappear {
+            if captureAccess.isLocked {
+                lockedViewVisible = false
+                resumePermitted = false
+                lifecycleLog.notice("locked capture view disappeared")
+                camera.pause()
+            }
+            locationService.stop(); cancelShutterPress(); modeTask?.cancel(); camera.cancelModePreviewWait()
+            updateAlbumSaving()
+        }
         .onReceive(camera.savedMedia) { library.insert($0) }
-         .onChange(of: camera.state) { _, state in
+        .onChange(of: camera.state) { _, state in
+            lifecycleLog.notice("camera state=\(String(describing: state), privacy: .public) locked=\(captureAccess.isLocked)")
             updateCameraTransition(for: state)
             updateLocationCollection()
             updateAlbumSaving()
@@ -637,6 +660,10 @@ struct CaptureScreen: View {
             if state != .ready { cancelCountdown(); cancelShutterPress() }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
+            lifecycleLog.notice("scene phase=\(String(describing: phase), privacy: .public) locked=\(captureAccess.isLocked) state=\(String(describing: camera.state), privacy: .public)")
+            // The secure-capture scene is visible even when SwiftUI reports
+            // background. Its view appearance owns camera startup and teardown.
+            if captureAccess.isLocked { return }
             resumePermitted = phase != .background
             updateLocationCollection()
             if phase != .active { cancelCountdown() }
@@ -707,7 +734,11 @@ struct CaptureScreen: View {
     }
 
     private var captureVisible: Bool {
-        scenePhase == .active && !showLibrary && !showSettings && camera.state == .ready
+        captureSceneVisible && !showLibrary && !showSettings && camera.state == .ready
+    }
+
+    private var captureSceneVisible: Bool {
+        captureAccess.isLocked ? lockedViewVisible : scenePhase == .active
     }
 
     private func updateLocationCollection() {
@@ -716,7 +747,7 @@ struct CaptureScreen: View {
     }
 
     private var workPhase: CaptureWorkScheduler.Phase {
-        if scenePhase != .active { return .suspended }
+        if !captureSceneVisible { return .suspended }
         if showLibrary || showSettings { return .browsing }
         if camera.isRecording || camera.isStartingVideo || videoStartPending || camera.isTakingPhoto || countdown != nil || shutterHeld { return .capturing }
         if changingSource { return .starting }
@@ -732,7 +763,7 @@ struct CaptureScreen: View {
     private func updateAlbumSaving() {
         library.work.setPhase(workPhase)
         albumSaver.update(items: library.items, disk: library.disk,
-                          canWork: scenePhase == .active,
+                          canWork: captureSceneVisible,
                           locked: captureAccess.isLocked, energy: energyMonitor.state,
                           pressure: camera.pressureLevel, cameraVisible: captureVisible,
                           capturing: camera.isRecording || camera.isStartingVideo || videoStartPending || camera.isTakingPhoto,
@@ -742,7 +773,8 @@ struct CaptureScreen: View {
     private func capturePreview(size: CGSize) -> some View {
         ZStack {
             if CameraTransitionPolicy.keepsPreview(for: camera.state,
-                                                   statusVisible: cameraTransitionStatusVisible) {
+                                                   statusVisible: cameraTransitionStatusVisible),
+               !(captureAccess.isLocked && camera.state == .paused) {
                 cameraFrames(interactive: camera.state == .ready && !changingSource)
                 if CameraTransitionPolicy.showsRecoveryHint(for: camera.state,
                                                             statusVisible: cameraTransitionStatusVisible) {
@@ -755,7 +787,7 @@ struct CaptureScreen: View {
                 cameraPlaceholder
             }
 
-            CameraLevelOverlay(active: showsLevel && scenePhase == .active && camera.state == .ready && camera.previewReady
+            CameraLevelOverlay(active: showsLevel && captureSceneVisible && camera.state == .ready && camera.previewReady
                 && !showLibrary && !showSettings && !showInfo && !showLocationInfo && !controlsExpanded,
                 scale: min(1.15, size.width / 375), orientation: layout.orientation ?? .portrait)
                 .frame(width: size.width, height: size.height)
@@ -1113,7 +1145,14 @@ struct CaptureScreen: View {
                 #if !targetEnvironment(simulator)
                 Button(L10n.text("重新打开相机")) { Task { await resumeCamera() } }.buttonStyle(.bordered)
                 #endif
-            case .paused: Text(L10n.text("相机已暂停")).foregroundStyle(.secondary)
+            case .paused:
+                Text(L10n.text("相机已暂停")).foregroundStyle(.secondary)
+                if captureAccess.isLocked {
+                    Button(L10n.text("重新打开相机")) {
+                        resumePermitted = true
+                        Task { await resumeCamera() }
+                    }.buttonStyle(.bordered)
+                }
             case .ready: EmptyView()
             }
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1324,7 +1363,7 @@ struct CaptureScreen: View {
             do {
                 for tick in stride(from: seconds - 1, through: 0, by: -1) {
                     try await ContinuousClock().sleep(until: deadline.advanced(by: .seconds(-tick)))
-                    guard !Task.isCancelled, countdownID == id, scenePhase == .active,
+                    guard !Task.isCancelled, countdownID == id, captureSceneVisible,
                           camera.state == .ready, kind == .photo else { cancelCountdown(); return }
                     if tick > 0 { countdown = tick }
                     else { countdown = nil; countdownTask = nil; capturePhotoNow() }
@@ -1527,6 +1566,7 @@ struct CaptureScreen: View {
         // Initial launch can still be inactive. Only background blocks startup;
         // the scene observer updates this state rather than a task's old environment.
         if let resumeTask { await resumeTask.value; return }
+        lifecycleLog.notice("resume begin phase=\(String(describing: scenePhase), privacy: .public) locked=\(captureAccess.isLocked) state=\(String(describing: camera.state), privacy: .public)")
         resumeTask = Task { @MainActor in
             if let modeTask { await modeTask.value }
             if #available(iOS 18.0, *) {
@@ -1542,7 +1582,10 @@ struct CaptureScreen: View {
                     if !captureAccess.isLocked { interfaceLanguage = ownLanguage }
                 }
             }
-            guard resumePermitted, !showLibrary, !showSettings else { return }
+            guard resumePermitted, !showLibrary, !showSettings else {
+                lifecycleLog.notice("resume skipped permitted=\(resumePermitted) library=\(showLibrary) settings=\(showSettings)")
+                return
+            }
             applyPreferences()
             await camera.setRecordingPreferences(single: VideoRecordingProfile(rawValue: singleVideoProfileRaw),
                 dual: VideoRecordingProfile(rawValue: dualVideoProfileRaw), mirror: mirrorsFront)
@@ -1550,6 +1593,8 @@ struct CaptureScreen: View {
             await camera.setCaptureMode(captureMode, front: layout.frontIsPrimary)
             camera.updateLayout(layout)
             await camera.resume()
+            lifecycleLog.notice("resume camera returned state=\(String(describing: camera.state), privacy: .public)")
+            if !resumePermitted { camera.pause(); return }
             if kind == .photo, !layout.frontIsPrimary { camera.restoreMainFraming() }
             await camera.setLivePhotoEnabled(livePhotoEnabled)
             if #available(iOS 18.0, *) {

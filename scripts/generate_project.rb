@@ -28,7 +28,7 @@ ui = project.new_target(:ui_test_bundle, 'CamUITests', :ios, '17.0')
       'CODE_SIGN_STYLE' => 'Automatic',
       'DEVELOPMENT_TEAM' => 'T6NSNA8LDZ',
       'MARKETING_VERSION' => '0.1.0',
-      'CURRENT_PROJECT_VERSION' => '54',
+      'CURRENT_PROJECT_VERSION' => '56',
       'GENERATE_INFOPLIST_FILE' => 'YES',
       'SWIFT_EMIT_LOC_STRINGS' => 'YES',
       'ENABLE_USER_SCRIPT_SANDBOXING' => 'YES'
@@ -93,7 +93,7 @@ end
       'SWIFT_VERSION' => '5.0', 'TARGETED_DEVICE_FAMILY' => '1,2',
       'IPHONEOS_DEPLOYMENT_TARGET' => '18.0', 'CODE_SIGN_STYLE' => 'Automatic',
       'DEVELOPMENT_TEAM' => 'T6NSNA8LDZ', 'MARKETING_VERSION' => '0.1.0',
-      'CURRENT_PROJECT_VERSION' => '54', 'GENERATE_INFOPLIST_FILE' => 'NO',
+      'CURRENT_PROJECT_VERSION' => '56', 'GENERATE_INFOPLIST_FILE' => 'NO',
       'INFOPLIST_FILE' => "#{name}/Info.plist", 'SKIP_INSTALL' => 'YES',
       'APPLICATION_EXTENSION_API_ONLY' => 'YES',
       'LD_RUNPATH_SEARCH_PATHS' => '$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks',
