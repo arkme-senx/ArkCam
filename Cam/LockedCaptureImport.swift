@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import LockedCameraCapture
+import UIKit
 
 enum LockedCaptureImport {
     // Copy, verify, atomically publish, then write a receipt. Never modify a
@@ -72,28 +73,81 @@ enum LockedCaptureImport {
 @available(iOS 18.0, *)
 @MainActor
 enum LockedCaptureReceiver {
+    enum Signal: Sendable {
+        case reconcile
+        case sessions([URL])
+    }
+
     static func observe(library: MediaLibrary) async {
-        for await update in LockedCameraCaptureManager.shared.sessionContentUpdates {
-            guard !Task.isCancelled else { return }
-            let urls: [URL]
-            switch update {
-            case .initial(let existing): urls = existing
-            case .added(let added): urls = [added]
-            case .removed: continue
-            @unknown default: continue
-            }
-            for url in urls {
-                guard await library.work.waitUntilAvailable() else { return }
-                do {
-                    let disk = library.disk
-                    _ = try await Task.detached(priority: .utility) {
-                        try LockedCaptureImport.receive(session: url, into: disk)
-                    }.value
-                    await library.recoverInterruptedCaptures()
-                    try await LockedCameraCaptureManager.shared.invalidateSessionContent(at: url)
-                } catch {
-                    library.message = "锁屏拍摄的素材尚未完全接收，原片已保留。\(error.localizedDescription)"
+        let manager = LockedCameraCaptureManager.shared
+        let (signals, continuation) = AsyncStream<Signal>.makeStream()
+        let foreground = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in continuation.yield(.reconcile) }
+        let updates = Task { @MainActor in
+            let changes = manager.sessionContentUpdates
+            // Recheck after constructing the listener too, so a session added
+            // during startup cannot fall between the snapshot and subscription.
+            continuation.yield(.reconcile)
+            for await update in changes {
+                guard !Task.isCancelled else { return }
+                switch update {
+                case .initial(let existing): continuation.yield(.sessions(existing))
+                case .added(let added): continuation.yield(.sessions([added]))
+                case .removed: continue
+                @unknown default: continue
                 }
+            }
+        }
+        defer {
+            updates.cancel()
+            NotificationCenter.default.removeObserver(foreground)
+            continuation.finish()
+        }
+        await consume(signals, snapshot: { manager.sessionContentURLs }, receive: { url in
+            guard await library.work.waitUntilAvailable() else { throw CancellationError() }
+            let disk = library.disk
+            _ = try await Task.detached(priority: .utility) {
+                try LockedCaptureImport.receive(session: url, into: disk)
+            }.value
+            try Task.checkCancellation()
+            await library.recoverInterruptedCaptures()
+            try Task.checkCancellation()
+            try await manager.invalidateSessionContent(at: url)
+        }, onFailure: { error in
+            library.message = "锁屏拍摄的素材尚未完全接收，原片已保留。\(error.localizedDescription)"
+        })
+    }
+
+    // Some devices expose pending URLs without delivering an initial stream
+    // event. Read the snapshot independently, then serialize all later signals.
+    // Only successful acknowledgements are deduplicated; failures may retry on
+    // the next foreground reconciliation without losing the system's originals.
+    static func consume(_ signals: AsyncStream<Signal>,
+                        snapshot: @MainActor () -> [URL],
+                        receive: @MainActor (URL) async throws -> Void,
+                        onFailure: @MainActor (Error) -> Void) async {
+        var completed = Set<URL>()
+        func receiveAll(_ urls: [URL]) async {
+            for url in urls {
+                guard !Task.isCancelled else { return }
+                let key = url.standardizedFileURL
+                guard !completed.contains(key) else { continue }
+                do {
+                    try await receive(url)
+                    completed.insert(key)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    onFailure(error)
+                }
+            }
+        }
+        await receiveAll(snapshot())
+        for await signal in signals {
+            guard !Task.isCancelled else { return }
+            switch signal {
+            case .reconcile: await receiveAll(snapshot())
+            case .sessions(let urls): await receiveAll(urls)
             }
         }
     }

@@ -2091,3 +2091,91 @@ final class CamTests: XCTestCase {
         XCTAssertEqual(export.status, .completed, export.error?.localizedDescription ?? "")
     }
 }
+
+@available(iOS 18.0, *)
+@MainActor
+final class LockedCaptureReceiverTests: XCTestCase {
+    private let first = URL(fileURLWithPath: "/sessions/first")
+    private let second = URL(fileURLWithPath: "/sessions/second")
+
+    func testPendingSnapshotImportsWithoutAnyInitialStreamEvent() async {
+        let (signals, continuation) = AsyncStream<LockedCaptureReceiver.Signal>.makeStream()
+        continuation.finish()
+        var received: [URL] = []
+        await LockedCaptureReceiver.consume(signals, snapshot: { [self.first] }, receive: {
+            received.append($0)
+        }, onFailure: { XCTFail("Unexpected import failure: \($0)") })
+        XCTAssertEqual(received, [first])
+    }
+
+    func testForegroundRechecksSnapshotEvenWithoutAddedEvent() async {
+        let (signals, continuation) = AsyncStream<LockedCaptureReceiver.Signal>.makeStream()
+        continuation.yield(.reconcile)
+        continuation.finish()
+        var reads = 0
+        var received: [URL] = []
+        await LockedCaptureReceiver.consume(signals, snapshot: {
+            reads += 1
+            return reads == 1 ? [] : [self.first]
+        }, receive: { received.append($0) }, onFailure: { XCTFail("\($0)") })
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(received, [first])
+    }
+
+    func testEventsQueuedDuringImportAreSerializedAndDeduplicated() async {
+        let (signals, continuation) = AsyncStream<LockedCaptureReceiver.Signal>.makeStream()
+        var received: [URL] = []
+        var active = 0
+        await LockedCaptureReceiver.consume(signals, snapshot: { [self.first] }, receive: { url in
+            active += 1
+            XCTAssertEqual(active, 1)
+            defer { active -= 1 }
+            received.append(url)
+            if url == self.first {
+                continuation.yield(.sessions([self.first, self.second, self.first]))
+                continuation.yield(.reconcile)
+                continuation.finish()
+                await Task.yield()
+            }
+        }, onFailure: { XCTFail("\($0)") })
+        XCTAssertEqual(received, [first, second])
+    }
+
+    func testFailedSessionRetriesOnReconciliationAndThenDeduplicates() async {
+        let (signals, continuation) = AsyncStream<LockedCaptureReceiver.Signal>.makeStream()
+        continuation.yield(.reconcile)
+        continuation.yield(.sessions([first]))
+        continuation.finish()
+        var attempts = 0
+        var failures = 0
+        await LockedCaptureReceiver.consume(signals, snapshot: { [self.first] }, receive: { _ in
+            attempts += 1
+            if attempts == 1 { throw CocoaError(.fileReadNoPermission) }
+        }, onFailure: { _ in failures += 1 })
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(failures, 1)
+    }
+
+    func testCancellationDoesNotAcknowledgeOrStartNextSession() async {
+        let (signals, continuation) = AsyncStream<LockedCaptureReceiver.Signal>.makeStream()
+        let started = expectation(description: "Import started")
+        var attempted: [URL] = []
+        var acknowledged: [URL] = []
+        var failures = 0
+        let task = Task {
+            await LockedCaptureReceiver.consume(signals, snapshot: { [self.first, self.second] }, receive: { url in
+                attempted.append(url)
+                started.fulfill()
+                try await Task.sleep(for: .seconds(60))
+                acknowledged.append(url)
+            }, onFailure: { _ in failures += 1 })
+        }
+        await fulfillment(of: [started], timeout: 3)
+        task.cancel()
+        await task.value
+        continuation.finish()
+        XCTAssertEqual(attempted, [first])
+        XCTAssertTrue(acknowledged.isEmpty)
+        XCTAssertEqual(failures, 0)
+    }
+}
