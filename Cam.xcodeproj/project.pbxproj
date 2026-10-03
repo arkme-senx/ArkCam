@@ -285,7 +285,7 @@
 		CE109D5955A5F63DF3FF32C7 /* PairRecorder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PairRecorder.swift; sourceTree = "<group>"; };
 		D736F87C875F9558225E6513 /* CaptureScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptureScreen.swift; sourceTree = "<group>"; };
 		D8208676BE40C195DB20C67B /* en */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
-		DAEA36DD76C3BB43697B8657 /* CamCapture.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CamCapture.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		DAEA36DD76C3BB43697B8657 /* CamCapture.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = CamCapture.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E12EFEB255E22D8BEA0FCF76 /* AutoAlbumSaver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AutoAlbumSaver.swift; sourceTree = "<group>"; };
 		E32F5679E24EDE47AF0679AF /* CamCaptureIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CamCaptureIntent.swift; sourceTree = "<group>"; };
 		ED37CCC64F1C372BA4FAB48B /* zh-Hans */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
@@ -354,7 +354,6 @@
 				66F273D00B6155A299FE7599 /* CamUITests.swift */,
 				6FB1FC2922AF671C5A04FC4D /* LocalizationUITests.swift */,
 			);
-			name = CamUITests;
 			path = CamUITests;
 			sourceTree = "<group>";
 		};
@@ -363,7 +362,6 @@
 			children = (
 				9DB64BAA7A01C6749C41D65B /* CamControls.swift */,
 			);
-			name = CamControls;
 			path = CamControls;
 			sourceTree = "<group>";
 		};
@@ -383,7 +381,6 @@
 				A765767F807E6322C7DDBC2B /* Localization.swift */,
 				C836277CA27660119349E578 /* Resources */,
 			);
-			name = Shared;
 			path = Shared;
 			sourceTree = "<group>";
 		};
@@ -392,7 +389,6 @@
 			children = (
 				EEC964822C0FBF417184061F /* CamCapture.swift */,
 			);
-			name = CamCapture;
 			path = CamCapture;
 			sourceTree = "<group>";
 		};
@@ -444,7 +440,6 @@
 				5C5F34186EF719852694B682 /* VideoRecordingSettings.swift */,
 				9ACB1BC9AF4F188FF1BA9647 /* Assets.xcassets */,
 			);
-			name = Cam;
 			path = Cam;
 			sourceTree = "<group>";
 		};
@@ -465,7 +460,6 @@
 				F0F6D5F50D9212A31BCCCA23 /* ThermalOptimizationTests.swift */,
 				49897C87241DCCF1470E10C4 /* VideoRecordingSettingsTests.swift */,
 			);
-			name = CamTests;
 			path = CamTests;
 			sourceTree = "<group>";
 		};
@@ -490,7 +484,6 @@
 				FFB65749BABB09376C44A08E /* Localizable.strings */,
 				7AC40A53716DF4793B733552 /* InfoPlist.strings */,
 			);
-			name = Resources;
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -608,6 +601,28 @@
 			attributes = {
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					1ECE66173267FBE19BEAD47C = {
+						DevelopmentTeam = T6NSNA8LDZ;
+						ProvisioningStyle = Automatic;
+					};
+					90B33A3650A5954935EF6CF3 = {
+						DevelopmentTeam = T6NSNA8LDZ;
+						ProvisioningStyle = Automatic;
+					};
+					9E9F7DEB3A3F75650AE865EF = {
+						DevelopmentTeam = T6NSNA8LDZ;
+						ProvisioningStyle = Automatic;
+					};
+					BA840D8C57A8562DF08C743C = {
+						DevelopmentTeam = T6NSNA8LDZ;
+						ProvisioningStyle = Automatic;
+					};
+					C5DFFE6A766DEFE9A14B9E4E = {
+						DevelopmentTeam = T6NSNA8LDZ;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = CE3DB46B74CFF40756BCF520 /* Build configuration list for PBXProject "Cam" */;
 			compatibilityVersion = "Xcode 3.2";
@@ -633,8 +648,6 @@
 				Base,
 			);
 			mainGroup = B5557B3047E769E4B7E1F24A;
-			minimizedProjectReferenceProxies = 0;
-			preferredProjectObjectVersion = 77;
 			productRefGroup = D914AA0EB7313A584CC68566 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -1242,8 +1255,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;

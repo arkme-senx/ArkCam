@@ -1,4 +1,5 @@
 import LockedCameraCapture
+import ExtensionKit
 import SwiftUI
 
 @main
