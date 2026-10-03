@@ -204,7 +204,7 @@ enum MediaExporter {
                     targetSize: recipe.videoComposition.renderSize, sourceFPS: Double(rate),
                     targetFPS: 1 / recipe.videoComposition.frameDuration.seconds)
                 if passthrough,
-                   let target = try await recipe.composition.loadTracks(withMediaType: .video).first as? AVMutableCompositionTrack {
+                   let target = try await recipe.composition.loadTracks(withMediaType: .video).first {
                     target.preferredTransform = transform
                 } else { passthrough = false }
             }
@@ -220,13 +220,27 @@ enum MediaExporter {
         export.outputFileType = .mov
         export.shouldOptimizeForNetworkUse = false
         export.metadata = videoMetadata(item)
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                export.exportAsynchronously { continuation.resume() }
+        if #available(iOS 18.0, *) {
+            do {
+                try await withTaskCancellationHandler {
+                    try await export.export(to: outputURL, as: .mov)
+                } onCancel: {
+                    export.cancelExport()
+                }
+            } catch is CancellationError {
+                throw CamError.message("导出已取消，原片仍在 App 中。")
+            } catch {
+                throw error
             }
-        } onCancel: { export.cancelExport() }
-        guard export.status == .completed else {
-            throw export.error ?? CamError.message(export.status == .cancelled ? "导出已取消，原片仍在 App 中。" : "视频导出失败，原片仍在 App 中。")
+        } else {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    export.exportAsynchronously { continuation.resume() }
+                }
+            } onCancel: { export.cancelExport() }
+            guard export.status == .completed else {
+                throw export.error ?? CamError.message(export.status == .cancelled ? "导出已取消，原片仍在 App 中。" : "视频导出失败，原片仍在 App 中。")
+            }
         }
     }
 

@@ -28,7 +28,17 @@ enum CameraDefaults {
     ]
 
     static func bool(_ key: String, in defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? booleans[key]!
+        guard let value = defaults.object(forKey: key) else { return booleans[key]! }
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        if let value = value as? String {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "y", "1", "on": return true
+            case "false", "no", "n", "0", "off": return false
+            default: break
+            }
+        }
+        return booleans[key]!
     }
     static func string(_ key: String, in defaults: UserDefaults = .standard) -> String {
         defaults.string(forKey: key) ?? strings[key]!

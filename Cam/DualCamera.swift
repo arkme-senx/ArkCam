@@ -509,6 +509,10 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private var frontUsesVideoDisplay = true
     private var rearDisplayCadence = PreviewDisplayCadence()
     private var frontDisplayCadence = PreviewDisplayCadence()
+    // Capture-queue state. Keep the renderer's target cadence alongside the
+    // applied load plan so the per-sample preview path does not rebuild the
+    // same policy value for every camera frame.
+    private var previewDisplayFrameRate: Double = 24
     private var rearDisplayedFrames = 0
     private var frontDisplayedFrames = 0
     private let queue = DispatchQueue(label: "cam.capture", qos: .userInitiated)
@@ -2721,6 +2725,7 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private func applyLoadPlan(_ plan: CameraLoadPlan, level: CameraPressureLevel, force: Bool = false) {
         guard force || appliedPressureLevel != level else { return }
         appliedPressureLevel = level
+        previewDisplayFrameRate = Double(plan.frameRate)
         publish { $0.pressureLevel = level }
         liveBuffer.configure(maxFramesPerSecond: plan.liveFrameRate, maxLongEdge: plan.liveLongEdge)
         let requested = Int32(activeVideoProfile?.fps ?? 30)
@@ -3480,16 +3485,21 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         guard configured, wantsRunning, recording == nil else { return }
         let profile = captureIsDual ? dualVideoProfile : singleVideoProfile
         for device in devices { _ = videoFormat(for: device, profile: profile) }
-        // Keep the video format lookup warm, but attach audio only when a video
-        // or Live capture actually needs it. An idle photo preview otherwise
-        // keeps AVAudioSession active for no user-visible benefit.
+        guard !captureVideoMode,
+              AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        // QuickTake is an implicit video transition from the photo shutter. Keep
+        // the audio input attached while the photo camera is visible so the
+        // first drag does not have to rebuild the AVCapture graph on the capture
+        // queue. No samples are retained while the Live Photo buffer is off;
+        // pause/background still releases the input below.
+        try? addMicrophone()
     }
 
     private func removeMicrophone(force: Bool = false) {
-        // A preview in either photo or video mode does not need an audio graph.
-        // Keep it attached only while a recorder/Live buffer is consuming it;
-        // pause/background always releases it as well.
-        if !force && (recording != nil || recordingStartID != nil || liveBufferingEnabled) { return }
+        // Keep authorized audio warm in photo mode for QuickTake. The explicit
+        // force path is used when leaving the camera or entering the background.
+        if !force && (recording != nil || recordingStartID != nil || liveBufferingEnabled ||
+                      (wantsRunning && !captureVideoMode)) { return }
         if let audioInput {
             session.beginConfiguration()
             session.removeOutput(audioOutput)
@@ -3549,12 +3559,11 @@ final class DualCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         // This throttles only the on-screen renderer. The recorder and Live
         // buffer still receive every capture sample below this branch.
         let time = CMSampleBufferGetPresentationTimeStamp(sample)
-        let interval = 1.0 / Double(CameraLoadPolicy.plan(level: appliedPressureLevel, causes: []).frameRate)
         let allowed: Bool
         if front {
-            allowed = frontDisplayCadence.shouldAttempt(at: time, targetFrameRate: 1 / interval)
+            allowed = frontDisplayCadence.shouldAttempt(at: time, targetFrameRate: previewDisplayFrameRate)
         } else {
-            allowed = rearDisplayCadence.shouldAttempt(at: time, targetFrameRate: 1 / interval)
+            allowed = rearDisplayCadence.shouldAttempt(at: time, targetFrameRate: previewDisplayFrameRate)
         }
         guard allowed, display(sample, on: layer) else { return false }
         if front { frontDisplayCadence.didEnqueue(at: time) }
