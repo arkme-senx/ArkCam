@@ -48,6 +48,29 @@ final class CameraCompatibilityTests: XCTestCase {
             } }
         }
     }
+
+    func testRegularCanvasHonorsAsymmetricSafeAreasAcrossFoldPoses() {
+        let portrait = CameraChromeGeometry(size: CGSize(width: 744, height: 1080), kind: .photo,
+                                            aspect: .standard, safeAreaInsets: EdgeInsets(top: 50, leading: 0,
+                                                                                           bottom: 34, trailing: 0),
+                                            horizontalSizeClass: .regular, verticalSizeClass: .regular)
+        XCTAssertFalse(portrait.usesSideRail)
+        XCTAssertGreaterThanOrEqual(portrait.preview.minY, 74)
+        XCTAssertLessThanOrEqual(portrait.shutterY + portrait.shutterDiameter / 2, 1080 - 34)
+        XCTAssertFalse(portrait.preview.intersects(CGRect(x: portrait.centerX - portrait.shutterDiameter / 2,
+                                                          y: portrait.shutterY - portrait.shutterDiameter / 2,
+                                                          width: portrait.shutterDiameter, height: portrait.shutterDiameter)))
+
+        let landscape = CameraChromeGeometry(size: CGSize(width: 1080, height: 744), kind: .photo,
+                                             aspect: .standard, landscapeCapture: true,
+                                             safeAreaInsets: EdgeInsets(top: 0, leading: 56,
+                                                                        bottom: 0, trailing: 140),
+                                             horizontalSizeClass: .regular, verticalSizeClass: .regular)
+        XCTAssertTrue(landscape.usesSideRail)
+        XCTAssertLessThan(landscape.preview.maxX, landscape.centerX - 80)
+        XCTAssertLessThanOrEqual(landscape.shutterY + landscape.shutterDiameter / 2, 744)
+        XCTAssertGreaterThan(landscape.bottomY, landscape.shutterY)
+    }
     func testKnownCeilingsRespectActualRouteEvenOnNewModels() {
         for (model, photo, video) in [("iPhone13,4",12.0,7.0),("iPhone14,2",15,9),("iPhone16,2",25,15),("iPhone18,1",40,15),("iPhone18,4",10,6)] {
             XCTAssertEqual(CameraZoomPolicy.maximum(hardware: model, video: false, available: 100, hasTelephoto: true, sensorCrop: true), photo)

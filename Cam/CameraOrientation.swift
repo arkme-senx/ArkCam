@@ -31,7 +31,22 @@ struct CameraOrientationReader: UIViewRepresentable {
         override func layoutSubviews() { super.layoutSubviews(); report() }
         func report() {
             guard let scene = window?.windowScene, scene.interfaceOrientation != .unknown else { return }
-            let value = UIDevice.current.userInterfaceIdiom == .pad ? CameraOrientation(scene.interfaceOrientation) : .portrait
+            let regularCanvas = traitCollection.horizontalSizeClass == .regular && traitCollection.verticalSizeClass == .regular
+            let value: CameraOrientation
+            if regularCanvas {
+                // iPhone Duo's inner display can be wider than it is tall while
+                // the scene still reports portrait. Use the local window bounds
+                // for that pose; the scene orientation remains authoritative
+                // when UIKit reports a real landscape orientation.
+                switch scene.interfaceOrientation {
+                case .landscapeLeft, .landscapeRight:
+                    value = CameraOrientation(scene.interfaceOrientation)
+                default:
+                    value = bounds.width > bounds.height ? .landscapeRight : .portrait
+                }
+            } else {
+                value = UIDevice.current.userInterfaceIdiom == .pad ? CameraOrientation(scene.interfaceOrientation) : .portrait
+            }
             guard previous != value else { return }
             previous = value
             DispatchQueue.main.async { [weak self] in self?.changed?(value) }

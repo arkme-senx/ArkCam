@@ -75,11 +75,23 @@ struct CameraChromeGeometry {
     let kind: CaptureKind
     var aspect: CaptureAspect? = nil
     var landscapeCapture = false
-    var usesSideRail: Bool { size.width >= 650 && size.width > size.height }
-    private var classic: Bool { size.width <= 500 && size.height / max(1, size.width) >= 1.95 && !landscapeCapture }
+    var safeAreaInsets = EdgeInsets()
+    var horizontalSizeClass: UserInterfaceSizeClass? = nil
+    var verticalSizeClass: UserInterfaceSizeClass? = nil
+    private var regularCanvas: Bool {
+        horizontalSizeClass == .regular && verticalSizeClass == .regular
+    }
+    var usesSideRail: Bool { regularCanvas && size.width > size.height }
+    private var classic: Bool {
+        !regularCanvas && size.width <= 500 && size.height / max(1, size.width) >= 1.95 && !landscapeCapture
+    }
     var scale: CGFloat { classic ? min(size.width / 375, size.height / 812) : min(1, max(0.92, size.width / 375)) }
-    var centerX: CGFloat { usesSideRail ? size.width - 124 : size.width / 2 }
-    var photoTop: CGFloat { classic ? 106 * scale : 64 }
+    private var topInset: CGFloat { regularCanvas ? max(0, safeAreaInsets.top) : 0 }
+    private var bottomInset: CGFloat { regularCanvas ? max(0, safeAreaInsets.bottom) : 0 }
+    private var leadingInset: CGFloat { regularCanvas ? max(0, safeAreaInsets.leading) : 0 }
+    private var trailingInset: CGFloat { regularCanvas ? max(0, safeAreaInsets.trailing) : 0 }
+    var centerX: CGFloat { usesSideRail ? size.width - trailingInset - 124 : size.width / 2 }
+    var photoTop: CGFloat { classic ? 106 * scale : max(64, topInset + 24) }
     private var ratio: CGFloat {
         let value = aspect?.ratio ?? kind.aspectRatio
         return landscapeCapture ? 1 / value : value
@@ -93,19 +105,25 @@ struct CameraChromeGeometry {
             return CGRect(x: 0, y: top, width: size.width, height: height)
         }
         let area = usesSideRail
-            ? CGRect(x: 16, y: 64, width: max(1, size.width - 264), height: max(1, size.height - 88))
-            : CGRect(x: 0, y: photoTop, width: size.width, height: max(1, shutterY - shutterDiameter / 2 - 14 - photoTop))
+            ? CGRect(x: leadingInset + 16, y: photoTop,
+                     width: max(1, size.width - leadingInset - trailingInset - 248 - 16),
+                     height: max(1, size.height - bottomInset - 88 - photoTop))
+            : CGRect(x: leadingInset, y: photoTop,
+                     width: max(1, size.width - leadingInset - trailingInset),
+                     height: max(1, shutterY - shutterDiameter / 2 - 14 - photoTop))
         let width = min(area.width, area.height * ratio)
         let height = width / ratio
         return CGRect(x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height)
     }
-    var topControlsY: CGFloat { classic ? 77.3 * scale : 36 }
+    var topControlsY: CGFloat { classic ? 77.3 * scale : max(36, topInset + 24) }
     var shutterY: CGFloat {
-        if usesSideRail { return max(120, size.height * 0.40) }
-        if !classic { return size.height - 150 }
+        if usesSideRail {
+            return min(max(120, size.height * 0.40), size.height - bottomInset - shutterDiameter / 2 - 24)
+        }
+        if !classic { return bottomY - 96 * scale }
         return min(photoTop + size.width * 4 / 3 + 55.67 * scale, bottomY - 80 * scale)
     }
-    var bottomY: CGFloat { size.height - 54 * scale }
+    var bottomY: CGFloat { size.height - max(54 * scale, bottomInset + 32) }
     var zoomY: CGFloat { classic ? min(preview.maxY - 36 * scale, shutterY - 91.67 * scale) : preview.maxY - 30 }
     var shutterDiameter: CGFloat { 80.67 * scale }
     var shutterInnerDiameter: CGFloat { 67.67 * scale }
@@ -151,6 +169,8 @@ struct CaptureScreen: View {
     @Environment(\.captureAccess) private var captureAccess
     @ObservedObject private var launchRoute = CameraLaunchRoute.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var captureMode: CameraCaptureMode = .dualPhoto
     @State private var changingSource = false
     @State private var initializedMode = false
@@ -225,7 +245,15 @@ struct CaptureScreen: View {
     private var cameraCanvas: some View {
         GeometryReader { geometry in
             let previewKind: CaptureKind = camera.isRecording ? .video : kind
-            let chrome = CameraChromeGeometry(size: geometry.size, kind: previewKind, aspect: layout.aspect, landscapeCapture: layout.orientation?.isLandscape == true)
+            let regularCanvas = horizontalSizeClass == .regular && verticalSizeClass == .regular
+            let landscapeCapture = regularCanvas
+                ? geometry.size.width > geometry.size.height
+                : layout.orientation?.isLandscape == true
+            let chrome = CameraChromeGeometry(size: geometry.size, kind: previewKind, aspect: layout.aspect,
+                                              landscapeCapture: landscapeCapture,
+                                              safeAreaInsets: geometry.safeAreaInsets,
+                                              horizontalSizeClass: horizontalSizeClass,
+                                              verticalSizeClass: verticalSizeClass)
 
             let panelLift = optionsPage == .overview ? 0 : min(0,
                 geometry.size.height - optionsHeight - 28 - chrome.shutterDiameter / 2 - chrome.shutterY) * optionsProgress
